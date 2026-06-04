@@ -64,6 +64,17 @@ local-ai-image-generator/
 
 ---
 
+## ⏱️ Performance Benchmarks
+
+Typical generation times for an image with **20 steps** (e.g. 512x512 resolution; actual times can vary depending on specific hardware specifications, clock speeds, and system load):
+
+*   **CUDA GPU (Nvidia RTX):** ~10 seconds.
+*   **Vulkan GPU (AMD / Intel Arc):** ~89 seconds.
+*   **GTX Vulkan Fallback (Nvidia GTX):** ~30 seconds (Vulkan runs significantly faster on legacy GTX series cards since they lack Tensor Cores).
+*   **CPU (Fallback):** ~150 - 300+ seconds (highly dependent on processor core count, speed, and AVX instruction sets).
+
+---
+
 ## 🛠️ Troubleshooting
 *   **Reset Environment:** If a build fails or you want to clear dependencies, run `scripts/reset.ps1`. (This preserves your models and generated images).
 *   **Port Conflicts:** The application binds to ports `1420` (Frontend) and `8080` (Backend API). Ensure these are free.
