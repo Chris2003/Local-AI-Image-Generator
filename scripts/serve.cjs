@@ -638,6 +638,7 @@ function getDefaultModel() {
 
 function killBackend() {
   return new Promise(resolve => {
+    resetGenerationState();
     if (!backendProc) {
       backendUnloadState = { active: false, phase: "", progress: 0 };
       resolve();
@@ -877,6 +878,16 @@ let generationState = {
   speed: "",
   decoding: false,
 };
+
+function resetGenerationState() {
+  generationState = {
+    active: false,
+    step: 0,
+    steps: 0,
+    speed: "",
+    decoding: false,
+  };
+}
 
 function startModelDownload(url, overrideFilename = null) {
   if (downloadState.active && !overrideFilename) {

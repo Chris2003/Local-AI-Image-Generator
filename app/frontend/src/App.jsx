@@ -50,7 +50,6 @@ function App() {
   // Prompts
   const [prompt, setPrompt] = useState("");
   const [negativePrompt, setNegativePrompt] = useState("");
-  const [inputImage, setInputImage] = useState(null); // base64 for Image-to-Image
 
   // Model & Server Status
   const [activeModel, setActiveModel] = useState(null);
@@ -342,8 +341,6 @@ function App() {
             generationProgress={generationProgress}
             setGenerationProgress={setGenerationProgress}
             setActiveTab={setActiveTab}
-            inputImage={inputImage}
-            setInputImage={setInputImage}
             showAlert={showAlert}
             showConfirm={showConfirm}
           />
@@ -382,7 +379,6 @@ function App() {
     generatedImages,
     isGenerating,
     generationProgress,
-    inputImage,
     serverRunning,
     specs,
     backendOptions,

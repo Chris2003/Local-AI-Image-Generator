@@ -777,46 +777,6 @@ html[data-theme="dark"] .m3-segment-item:hover:not(.active):not(.disabled) {
   margin-top: 16px;
 }
 
-.image-to-image-section {
-  margin-top: 12px;
-  border-top: 1px solid var(--border-color);
-  padding-top: 16px;
-}
-
-/* Drag and Drop Zone */
-.image-dropzone {
-  border: 2.5px dashed var(--border-color);
-  border-radius: var(--md-shape-corner-large);
-  padding: 24px;
-  text-align: center;
-  cursor: pointer;
-  background-color: var(--md-sys-color-surface-variant);
-  color: var(--md-sys-color-on-surface-variant);
-  transition: all var(--md-transition-duration);
-  position: relative;
-  overflow: hidden;
-  min-height: 120px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-}
-
-.image-dropzone:hover {
-  background-color: var(--md-sys-color-primary-container);
-  border-color: var(--md-sys-color-primary);
-  color: var(--md-sys-color-primary);
-}
-
-.dropped-image-preview {
-  max-width: 100%;
-  max-height: 160px;
-  border-radius: var(--md-shape-corner-medium);
-  object-fit: contain;
-  box-shadow: var(--glass-shadow);
-}
-
 /* Aspect Ratio Buttons with Previews */
 .aspect-ratio-btn {
   position: relative;

@@ -1,6 +1,6 @@
 import React, { memo, useState, useRef, useCallback } from "react";
-import { Sparkles, Download, Copy, RefreshCw, ImagePlus, Check, Sliders, Layers, Trash2 } from "lucide-react";
-import { generateImage, isTauri, startServer, stopServer, waitForServerReady, getBackendStatus, getGenerationProgress, saveGeneratedOutput, deleteGeneratedOutputs } from "../services/api";
+import { Sparkles, Download, Copy, RefreshCw, Check, Sliders, Layers, Trash2 } from "lucide-react";
+import { generateImage, startServer, stopServer, waitForServerReady, getBackendStatus, getGenerationProgress, saveGeneratedOutput, deleteGeneratedOutputs } from "../services/api";
 
 const GalleryItem = memo(({ img, idx, isSelected, onClick }) => {
   const handleClick = (e) => {
@@ -37,8 +37,6 @@ function Generator({
   generationProgress,
   setGenerationProgress,
   setActiveTab,
-  inputImage,
-  setInputImage,
   showAlert = async ({ message }) => window.alert(message),
   showConfirm = async ({ message }) => window.confirm(message),
 }) {
@@ -58,31 +56,8 @@ function Generator({
   const [isDecoding, setIsDecoding] = useState(false);
   const [selectedGalleryIndexes, setSelectedGalleryIndexes] = useState([]);
   const timerRef = useRef(null);
-  const fileInputRef = useRef(null);
   const abortControllerRef = useRef(null);
-
-  // Trigger file dialog for Image-to-Image
-  const handleDropzoneClick = () => {
-    fileInputRef.current.click();
-  };
-
-  // Convert uploaded image file to Base64
-  const handleFileChange = (e) => {
-    const file = e.target.files[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onload = () => {
-        setInputImage(reader.result);
-      };
-      reader.readAsDataURL(file);
-    }
-  };
-
-  const clearInputImage = (e) => {
-    e.stopPropagation();
-    setInputImage(null);
-    if (fileInputRef.current) fileInputRef.current.value = "";
-  };
+  const hasRealGenerationStepRef = useRef(false);
 
   // Trigger main image generation process
   const handleGenerate = async () => {
@@ -170,6 +145,7 @@ function Generator({
     setElapsedTime(0);
     setCurrentStep(0);
     setGenerationSpeed("");
+    hasRealGenerationStepRef.current = false;
     setIsCpuFallback(false);
     setIsDecoding(false);
     setGenDuration(null);
@@ -203,7 +179,10 @@ function Generator({
           const steps = progress.steps || constraints.steps || 20;
           const speed = decoding ? "" : (progress.speed || "");
 
-          setCurrentStep(step);
+          if (decoding || progress.steps > 0) {
+            hasRealGenerationStepRef.current = true;
+            setCurrentStep(step);
+          }
           if (!decoding) {
             setGenerationSpeed(speed);
           } else {
@@ -218,7 +197,11 @@ function Generator({
             progressPercent = Math.round((step / steps) * 100);
           }
           progressPercent = Math.min(99, progressPercent);
-          setGenerationProgress((prev) => Math.max(prev, progressPercent));
+          if (decoding || progress.steps > 0) {
+            setGenerationProgress(progressPercent);
+          } else {
+            setGenerationProgress((prev) => Math.max(prev, progressPercent));
+          }
 
           // Calculate remaining time
           let remaining = 0;
@@ -275,8 +258,6 @@ function Generator({
           expectedTotal = constraints.steps * activeStepTime;
           step = Math.min(constraints.steps - 1, Math.floor(elapsedSeconds / activeStepTime));
         }
-        setCurrentStep(step);
-
         const remaining = Math.max(1, expectedTotal - elapsedSeconds);
         setEstimatedLeftTime(Math.round(remaining));
 
@@ -305,7 +286,9 @@ function Generator({
             progressPercent = Math.min(99, Math.round(85 + 14 * decay));
           }
         }
-        setGenerationProgress((p) => Math.max(p, progressPercent));
+        if (!hasRealGenerationStepRef.current) {
+          setGenerationProgress((p) => Math.max(p, progressPercent));
+        }
       }
     }, 1000);
 
@@ -316,7 +299,7 @@ function Generator({
         negativePrompt,
         constraints,
         activeModel,
-        inputImage, // passes base64 if I2I
+        null,
         (prog) => setGenerationProgress((prev) => Math.max(prev, prog)),
         abortControllerRef.current.signal
       );
@@ -339,7 +322,6 @@ function Generator({
         model: activeModel,
         duration_sec: result.duration_sec,
         timestamp: new Date().toLocaleTimeString(),
-        inputImage: Boolean(inputImage),
       };
       let savedOutput = null;
       let savedUrl = null;
@@ -396,31 +378,29 @@ function Generator({
         abortControllerRef.current.abort();
       }
       
-      // In native desktop mode, restart the server process to immediately free CPU threads/memory
-      if (isTauri()) {
-        try {
-          console.log("Cancelling: Stopping server to kill generation threads...");
-          await stopServer();
-          if (activeModel) {
-            console.log("Cancelling: Restarting server for future generations...");
-            await startServer(activeModel, constraints);
-            const ready = await waitForServerReady();
-            if (!ready) {
-              console.warn("Server failed to restart properly.");
-            }
+      try {
+        console.log("Cancelling: Stopping server to kill generation threads...");
+        await stopServer();
+        setCurrentStep(0);
+        setGenerationSpeed("");
+        setIsDecoding(false);
+        hasRealGenerationStepRef.current = false;
+
+        if (activeModel) {
+          console.log("Cancelling: Restarting server for future generations...");
+          await startServer(activeModel, constraints);
+          const ready = await waitForServerReady();
+          if (!ready) {
+            console.warn("Server failed to restart properly.");
           }
-        } catch (err) {
-          console.error("Failed to restart server on cancellation:", err);
-        } finally {
-          setIsCancelling(false);
-          setIsGenerating(false);
-          setGenerationProgress(0);
         }
-      } else {
-        // Browser Mode
+      } catch (err) {
+        console.error("Failed to restart server on cancellation:", err);
+      } finally {
         setIsCancelling(false);
         setIsGenerating(false);
         setGenerationProgress(0);
+        setEstimatedLeftTime(0);
       }
     }
   };
@@ -631,51 +611,6 @@ function Generator({
                   <div className="status-chip" onClick={() => setActiveTab("constraints")}>
                     <span>Seed: {constraints.seed === -1 ? "Random" : constraints.seed}</span>
                   </div>
-                </div>
-              </div>
-
-              {/* Image to Image Dropzone Toggle */}
-              <div className="image-to-image-section">
-                <label className="m3-text-field-label" style={{ display: "block", marginBottom: "8px" }}>
-                  Image-to-Image Source (Optional)
-                </label>
-                <div className="image-dropzone" onClick={handleDropzoneClick}>
-                  <input
-                    type="file"
-                    ref={fileInputRef}
-                    style={{ display: "none" }}
-                    accept="image/*"
-                    onChange={handleFileChange}
-                    disabled={isGenerating}
-                  />
-
-                  {inputImage ? (
-                    <div style={{ position: "relative", width: "100%", height: "100%" }}>
-                      <img src={inputImage} className="dropped-image-preview" alt="Source" />
-                      <button
-                        className="m3-btn m3-btn-error"
-                        style={{
-                          position: "absolute",
-                          top: "4px",
-                          right: "4px",
-                          height: "30px",
-                          width: "30px",
-                          borderRadius: "50%",
-                          padding: 0
-                        }}
-                        onClick={clearInputImage}
-                      >
-                        ×
-                      </button>
-                    </div>
-                  ) : (
-                    <>
-                      <ImagePlus size={24} style={{ color: "var(--md-sys-color-primary)" }} />
-                      <span style={{ fontSize: "0.85rem", fontWeight: 500 }}>
-                        Click or drag image here for Image-to-Image guidance
-                      </span>
-                    </>
-                  )}
                 </div>
               </div>
 
