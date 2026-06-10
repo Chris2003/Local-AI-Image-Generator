@@ -70,6 +70,68 @@ function backendEnv(binaryPath) {
   return env;
 }
 
+// A Vulkan build can see several GPUs at once (e.g. a CPU's integrated GPU plus one
+// or more discrete cards). ggml indexes them in its own order — that index is exactly
+// what the "vulkanN" backend flag selects. We probe ggml's device list once so the UI
+// can offer a picker, and so "Auto" can prefer a real discrete card (NVIDIA/AMD/Intel
+// with matrix cores, dedicated VRAM) over an integrated GPU or software rasterizer.
+let cachedVulkanDevices = null;
+// The Vulkan device index the running backend was actually launched with. Used when
+// parsing ggml's log (it prints every device, so we must match the selected one).
+let selectedVulkanIndex = 0;
+
+function listVulkanDevices(binaryPath) {
+  if (cachedVulkanDevices !== null) return cachedVulkanDevices;
+  cachedVulkanDevices = [];
+  if (!binaryPath || !fs.existsSync(binaryPath)) return cachedVulkanDevices;
+  try {
+    const res = spawnSync(binaryPath, ["--diffusion-model", "__probe__", "--backend", "vulkan0"],
+      { encoding: "utf8", timeout: 8000, env: backendEnv(binaryPath) });
+    const text = `${res.stdout || ""}${res.stderr || ""}`;
+    cachedVulkanDevices = [...text.matchAll(/ggml_vulkan:\s*(\d+)\s*=\s*([^\r\n]+)/g)].map(m => {
+      const raw = m[2].trim();
+      const name = raw.split("|")[0].trim();
+      const lower = raw.toLowerCase();
+      const matrixCores = !/matrix cores:\s*none/.test(lower) && /matrix cores:/.test(lower);
+      let type = "integrated";
+      if (/llvmpipe|lavapipe|software/.test(lower)) type = "cpu";
+      else if (/uma:\s*0/.test(lower)) type = "discrete";
+      return { index: Number(m[1]), name, type, matrixCores };
+    });
+  } catch (_) {}
+  return cachedVulkanDevices;
+}
+
+function scoreVulkanDevice(d) {
+  const l = d.name.toLowerCase();
+  let s = 0;
+  if (/nvidia|geforce|rtx|quadro|tesla/.test(l)) s += 100;
+  if (/radeon rx|arc/.test(l)) s += 60;
+  if (d.matrixCores) s += 40;            // tensor/coopmat support
+  if (d.type === "discrete") s += 20;    // dedicated VRAM
+  if (d.type === "cpu" || /radv/.test(l)) s -= 50;
+  return s;
+}
+
+function pickBestVulkanIndex(binaryPath) {
+  const devices = listVulkanDevices(binaryPath);
+  if (!devices.length) return 0;
+  return [...devices].sort((a, b) => scoreVulkanDevice(b) - scoreVulkanDevice(a) || a.index - b.index)[0].index;
+}
+
+// Resolve a user preference ("auto", a number, or a numeric string) to a concrete,
+// valid Vulkan device index, falling back to the smart auto-pick.
+function resolveVulkanIndex(binaryPath, pref) {
+  const devices = listVulkanDevices(binaryPath);
+  if (pref !== undefined && pref !== null && pref !== "auto" && pref !== "") {
+    const n = Number(pref);
+    if (Number.isInteger(n) && (devices.length === 0 || devices.some(d => d.index === n))) {
+      return n;
+    }
+  }
+  return pickBestVulkanIndex(binaryPath);
+}
+
 // Resolve the node/npm used for setup + health checks. Prefer the portable copy under
 // app/tools/node-linux, otherwise fall back to whatever node is running this server
 // (system install) so the health dashboard does not flag a missing "Portable Node.js".
@@ -127,6 +189,7 @@ let currentSettings = {
   threads:  8,
   useGpu:   true,
   backendType: "auto",
+  vulkanDevice: "auto",   // "auto" or a Vulkan device index (multi-GPU selection)
   vaeTiling: true,
   vaeOnCpu:  false,
 };
@@ -186,8 +249,12 @@ function getGpuInfo() {
     try {
       const out = execSync("vulkaninfo --summary", { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 4000 });
       const names = [...out.matchAll(/deviceName\s*=\s*(.+)/g)].map(m => m[1].trim());
-      const real = names.find(n => n && !/llvmpipe|lavapipe/i.test(n));
-      if (real) { cachedGpuInfo = { name: real }; return cachedGpuInfo; }
+      const real = names.filter(n => n && !/llvmpipe|lavapipe/i.test(n));
+      // Prefer a discrete card over an integrated GPU (e.g. AMD/Intel iGPU).
+      const pick = real.find(n => /nvidia|geforce|rtx|quadro|tesla|radeon rx|arc/i.test(n))
+        || real.find(n => !/radv|integrated/i.test(n))
+        || real[0];
+      if (pick) { cachedGpuInfo = { name: pick }; return cachedGpuInfo; }
     } catch (_) {}
     try {
       const out = execSync("nvidia-smi --query-gpu=name --format=csv,noheader", { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
@@ -610,11 +677,18 @@ function getBackendOptions() {
     defaultBackend = "vulkan";
   }
 
+  // Devices the Vulkan backend can target, so the UI can offer a GPU picker.
+  const vulkanBinary = osPlatform === "win32" ? BACKEND_PATHS.vulkan : BACKEND_PATHS.linux;
+  const vulkanDevices = vulkanAvailable ? listVulkanDevices(vulkanBinary) : [];
+  const recommendedVulkanIndex = vulkanAvailable ? pickBestVulkanIndex(vulkanBinary) : 0;
+
   cachedBackendOptions = {
     options,
     unavailable,
     cudaAvailable,
     vulkanAvailable,
+    vulkanDevices,
+    recommendedVulkanIndex,
     defaultBackendType: defaultBackend,
   };
   return cachedBackendOptions;
@@ -814,9 +888,11 @@ async function startBackend(settings = {}) {
       "--sampler-rng", "cpu",
     );
   } else if (requestedBackend === "vulkan") {
+    const vkIdx = resolveVulkanIndex(backendPath, currentSettings.vulkanDevice);
+    selectedVulkanIndex = vkIdx;
     args.push(
-      "--backend", "vulkan0",
-      "--params-backend", "vulkan0",
+      "--backend", `vulkan${vkIdx}`,
+      "--params-backend", `vulkan${vkIdx}`,
       "--rng", "cpu",
       "--sampler-rng", "cpu",
     );
@@ -929,7 +1005,9 @@ async function startBackend(settings = {}) {
       currentSettings.backendDevice = backendLoadState.device;
     }
     // Vulkan device line, e.g. "ggml_vulkan: 0 = AMD Ryzen 9 9900X (RADV ...) (radv) | uma: 1 ..."
-    const vkDeviceMatch = cleanOutput.match(/ggml_vulkan:\s*\d+\s*=\s*([^|\r\n]+)/);
+    // ggml prints every device it found, so match the one we actually selected.
+    const vkIdx = selectedVulkanIndex ?? 0;
+    const vkDeviceMatch = cleanOutput.match(new RegExp(`ggml_vulkan:\\s*${vkIdx}\\s*=\\s*([^|\\r\\n]+)`));
     if (vkDeviceMatch) {
       const dev = vkDeviceMatch[1].trim().replace(/\s*\(radv\)\s*$/i, "").trim();
       if (dev) {
@@ -1605,6 +1683,9 @@ const server = http.createServer(async (req, res) => {
     if (body.backend_type) {
       newSettings.backendType = String(body.backend_type);
       newSettings.useGpu = body.backend_type !== "cpu";
+    }
+    if (body.vulkan_device !== undefined && body.vulkan_device !== null) {
+      newSettings.vulkanDevice = String(body.vulkan_device);
     }
     if (typeof body.vae_tiling === "boolean") newSettings.vaeTiling = body.vae_tiling;
     if (typeof body.vae_on_cpu === "boolean") newSettings.vaeOnCpu = body.vae_on_cpu;
