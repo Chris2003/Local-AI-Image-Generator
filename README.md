@@ -1,6 +1,6 @@
 # 🖼️ Local AI Image Generator
 
-### An easy, zero-setup Stable Diffusion GUI for Windows. Run GGUF & Safetensors models offline without Python configuration.
+### An easy, zero-setup Stable Diffusion GUI for Windows & Linux. Run GGUF & Safetensors models offline without Python configuration.
 
 
 
@@ -22,14 +22,23 @@
 ---
 
 ## 📖 Overview
-**Local AI Image Generator** is a zero-configuration, portable desktop environment for running Stable Diffusion (Safetensors/GGUF/CKPT) offline on Windows. Double-clicking `start.bat` automatically handles dependency setup, GPU backend matching (CUDA/Vulkan), and launches a high-performance local web workspace.
+**Local AI Image Generator** is a zero-configuration, portable desktop environment for running Stable Diffusion (Safetensors/GGUF/CKPT) offline on Windows and Linux. Running `start.bat` (Windows) or `./start.sh` (Linux) automatically handles dependency setup, GPU backend matching (CUDA/Vulkan on Windows, Vulkan on Linux), and launches a high-performance local web workspace.
 
 ---
 
 ## ⚡ Quick Start
+
+### Windows
 1. **Launch:** Double-click **`start.bat`** (downloads portable Node.js and pre-compiled GPU backend binaries on first run).
 2. **Add Models:** Drop `.safetensors`, `.gguf`, or `.ckpt` weights into `app/models/` (or download them via the **Model Manager** tab in the UI).
 3. **Generate:** Open `http://localhost:1420` in your browser, select your model, and write a prompt.
+
+### Linux (Ubuntu/Debian and other glibc distros)
+1. **Launch:** From a terminal, run **`./start.sh`** (on first run it installs the Vulkan backend and uses your system Node.js, or downloads a portable copy if needed).
+2. **Add Models:** Drop `.safetensors`, `.gguf`, or `.ckpt` weights into `app/models/` (or download them via the **Model Manager** tab in the UI).
+3. **Generate:** Your browser opens `http://localhost:1420` automatically — select your model and write a prompt.
+
+> **Linux requirements:** a 64-bit (x86_64) glibc system, plus `unzip` and either `curl` or `wget`. For GPU acceleration install the Vulkan loader and a Vulkan driver — e.g. `sudo apt install libvulkan1 mesa-vulkan-drivers vulkan-tools`. No GPU? It runs on CPU automatically.
 
 ---
 
@@ -46,16 +55,22 @@
 ## 📁 Repository Structure
 ```
 local-ai-image-generator/
-├── start.bat                  # Main double-click entrypoint
+├── start.bat                  # Windows double-click entrypoint
+├── start.sh                   # Linux entrypoint (./start.sh)
 ├── LICENSE                    # MIT Open Source license
 ├── .gitignore
 ├── README.md                  
 ├── scripts/
-│   ├── setup.ps1              # Automated GPU-detect and environment installer
-│   ├── reset.ps1              # Cleans runtime environments (keeps models & outputs)
-│   └── serve.cjs              # UI web server and backend lifecycle manager
+│   ├── setup.ps1              # Windows: GPU-detect and environment installer
+│   ├── setup.sh               # Linux: installs Vulkan backend + Node, builds UI
+│   ├── reset.ps1              # Windows: cleans runtime envs (keeps models & outputs)
+│   ├── reset.sh               # Linux: cleans runtime envs (keeps models & outputs)
+│   └── serve.cjs              # Cross-platform UI web server + backend lifecycle manager
 └── app/
     ├── frontend/              # UI source code (Vite + React)
+    ├── dist/                  # Prebuilt UI served by serve.cjs
+    ├── backend/win/           # Windows backend binaries (CUDA / Vulkan)
+    ├── backend/linux/         # Linux backend (sd-vulkan + libstable-diffusion.so)
     ├── models/                # Place weights here (.safetensors, .gguf, .ckpt)
     └── outputs/               # Saved images and parameters metadata
 ```
@@ -71,6 +86,8 @@ local-ai-image-generator/
 | **Intel Arc** | Vulkan | ✅ Native | Maps `sd-vulkan.exe` for Intel hardware. |
 | **Integrated / None** | CPU | ⚠️ Fallback | Runs on logical CPU threads (slow). |
 
+> **Linux note:** the Linux build ships the **Vulkan** backend (`app/backend/linux/sd-vulkan`), which accelerates AMD, Intel, and Nvidia GPUs through a single binary, with automatic CPU fallback. CUDA-specific binaries are Windows-only in this project; on Linux, Nvidia cards are driven through their Vulkan driver. For an Nvidia/AMD-specific Linux build (CUDA or ROCm), compile [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) and drop the resulting `sd-server` + `libstable-diffusion.so` into `app/backend/linux/` (renaming `sd-server` to `sd-vulkan`).
+
 ---
 
 ## ⏱️ Performance Benchmarks
@@ -85,8 +102,10 @@ Typical generation times for an image with **20 steps** (e.g. 512x512 resolution
 ---
 
 ## 🛠️ Troubleshooting
-*   **Reset Environment:** If a build fails or you want to clear dependencies, run `scripts/reset.ps1`. (This preserves your models and generated images).
+*   **Reset Environment:** If a build fails or you want to clear dependencies, run `scripts/reset.ps1` (Windows) or `scripts/reset.sh` (Linux). This preserves your models and generated images.
 *   **Port Conflicts:** The frontend uses `1420` by default. The backend tries `8080` first, then automatically falls back to a free port if `8080` is already busy.
+*   **Linux — "cannot open shared object file":** the backend needs `libstable-diffusion.so` next to `sd-vulkan`; `serve.cjs` sets `LD_LIBRARY_PATH` automatically. If you launched the binary by hand, run it from `app/backend/linux/` or export that directory on `LD_LIBRARY_PATH`.
+*   **Linux — no GPU detected:** install the Vulkan loader/driver (`sudo apt install libvulkan1 mesa-vulkan-drivers vulkan-tools`) and verify with `vulkaninfo --summary`. Without a Vulkan device the app still works on CPU.
 
 ---
 
