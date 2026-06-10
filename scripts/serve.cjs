@@ -53,6 +53,42 @@ if (osPlatform === "win32") {
 } else {
   BACKEND_PATH = BACKEND_PATHS.linux;
 }
+
+// The prebuilt Linux/macOS stable-diffusion.cpp binaries ship libstable-diffusion.so
+// next to the executable, but their embedded runpath points at the CI build folder.
+// Spawn them with the shared library directory on the loader path so they resolve it
+// regardless of the current working directory.
+function backendEnv(binaryPath) {
+  const env = { ...process.env };
+  if (!binaryPath) return env;
+  const dir = path.dirname(binaryPath);
+  if (osPlatform === "linux") {
+    env.LD_LIBRARY_PATH = env.LD_LIBRARY_PATH ? `${dir}:${env.LD_LIBRARY_PATH}` : dir;
+  } else if (osPlatform === "darwin") {
+    env.DYLD_LIBRARY_PATH = env.DYLD_LIBRARY_PATH ? `${dir}:${env.DYLD_LIBRARY_PATH}` : dir;
+  }
+  return env;
+}
+
+// Resolve the node/npm used for setup + health checks. Prefer the portable copy under
+// app/tools/node-linux, otherwise fall back to whatever node is running this server
+// (system install) so the health dashboard does not flag a missing "Portable Node.js".
+function resolveLinuxNodeBin(appDir, name) {
+  const portable = path.join(appDir, "tools", "node-linux", "bin", name);
+  if (fs.existsSync(portable)) return portable;
+  if (name === "node") return process.execPath;
+  const sibling = path.join(path.dirname(process.execPath), name);
+  if (fs.existsSync(sibling)) return sibling;
+  for (const candidate of [`/usr/bin/${name}`, `/usr/local/bin/${name}`, `/bin/${name}`]) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  try {
+    const found = execSync(`command -v ${name}`, { encoding: "utf8" }).trim();
+    if (found) return found;
+  } catch (_) {}
+  return sibling;
+}
+
 const MODELS  = path.join(ROOT, "app", "models");
 if (!fs.existsSync(MODELS)) {
   fs.mkdirSync(MODELS, { recursive: true });
@@ -140,6 +176,33 @@ function getGpuInfo() {
       if (output) {
         cachedGpuInfo = { name: output };
         return cachedGpuInfo;
+      }
+    } catch (_) {}
+  }
+
+  if (osPlatform === "linux") {
+    // Prefer the Vulkan compute device (what generation actually runs on),
+    // then an NVIDIA card with a loaded driver, then the first PCI display adapter.
+    try {
+      const out = execSync("vulkaninfo --summary", { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 4000 });
+      const names = [...out.matchAll(/deviceName\s*=\s*(.+)/g)].map(m => m[1].trim());
+      const real = names.find(n => n && !/llvmpipe|lavapipe/i.test(n));
+      if (real) { cachedGpuInfo = { name: real }; return cachedGpuInfo; }
+    } catch (_) {}
+    try {
+      const out = execSync("nvidia-smi --query-gpu=name --format=csv,noheader", { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+      const name = out.split(/\r?\n/)[0];
+      if (name) { cachedGpuInfo = { name }; return cachedGpuInfo; }
+    } catch (_) {}
+    try {
+      const out = execSync("lspci -mm", { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+      const line = out.split(/\r?\n/).find(l => /"(VGA compatible controller|3D controller|Display controller)"/i.test(l));
+      if (line) {
+        const parts = (line.match(/"([^"]*)"/g) || []).map(s => s.replace(/"/g, ""));
+        const vendor = (parts[1] || "").replace(/ Corporation| Inc\.| Technologies/gi, "").trim();
+        const device = (parts[2] || "").trim();
+        const name = [vendor, device].filter(Boolean).join(" ").trim();
+        if (name) { cachedGpuInfo = { name }; return cachedGpuInfo; }
       }
     } catch (_) {}
   }
@@ -355,8 +418,8 @@ function getSetupPaths() {
   } else {
     // Linux / WSL
     return {
-      node: path.join(appDir, "tools", "node-linux", "bin", "node"),
-      npm: path.join(appDir, "tools", "node-linux", "bin", "npm"),
+      node: resolveLinuxNodeBin(appDir, "node"),
+      npm: resolveLinuxNodeBin(appDir, "npm"),
       distIndex: path.join(DIST, "index.html"),
       linuxBackend: BACKEND_PATHS.linux,
       models: MODELS,
@@ -565,7 +628,7 @@ function backendAccepts(binaryPath, backendName) {
       "--params-backend", backendName,
       "--model", path.join(MODELS, "__backend_probe_missing__.safetensors"),
       "--listen-port", "18082",
-    ], { encoding: "utf8", timeout: 5000 });
+    ], { encoding: "utf8", timeout: 8000, env: backendEnv(binaryPath) });
     const output = `${result.stdout || ""}\n${result.stderr || ""}`;
     if (output.includes("backend config failed") || output.includes(`backend '${backendName}' was not found`)) {
       return false;
@@ -776,7 +839,7 @@ async function startBackend(settings = {}) {
   console.log("  [backend] Starting:", path.basename(backendPath), args.join(" "));
   backendReady = false;
 
-  backendProc = spawn(backendPath, args, { stdio: "pipe" });
+  backendProc = spawn(backendPath, args, { stdio: "pipe", env: backendEnv(backendPath) });
   startBackendReadyPoll();
 
   backendProc.stdout.on("data", d => {
@@ -864,6 +927,15 @@ async function startBackend(settings = {}) {
     if (deviceMatch) {
       backendLoadState.device = deviceMatch[1].trim();
       currentSettings.backendDevice = backendLoadState.device;
+    }
+    // Vulkan device line, e.g. "ggml_vulkan: 0 = AMD Ryzen 9 9900X (RADV ...) (radv) | uma: 1 ..."
+    const vkDeviceMatch = cleanOutput.match(/ggml_vulkan:\s*\d+\s*=\s*([^|\r\n]+)/);
+    if (vkDeviceMatch) {
+      const dev = vkDeviceMatch[1].trim().replace(/\s*\(radv\)\s*$/i, "").trim();
+      if (dev) {
+        backendLoadState.device = dev;
+        currentSettings.backendDevice = dev;
+      }
     }
     if (cleanOutput.includes("ggml_cuda_init")) {
       backendLoadState.backendMode = "CUDA GPU";
