@@ -45,6 +45,7 @@
 ## ✨ Features
 *   **100% Offline & Private:** Inference runs completely locally on your hardware.
 *   **Auto-Detected GPU Acceleration:** Configures **CUDA** for Nvidia cards, and **Vulkan** for AMD or Intel Arc GPUs.
+*   **GPU Device Picker (Multi-GPU):** On machines with more than one GPU (e.g. a discrete card plus an integrated one), choose exactly which GPU runs generation under **Image Constraints → System Settings → GPU Device**. **Auto** prefers a dedicated card with matrix-core acceleration.
 *   **Zero System Footprint:** Node.js is sandboxed inside the folder. No global environment paths are altered.
 *   **Integrated Model Manager:** Paste a Hugging Face URL to download weights directly, or drag-and-drop local weight files to import them.
 *   **Real-time Telemetry:** Monitor RAM, VRAM, CPU, and GPU load directly in the UI.
@@ -88,6 +89,8 @@ local-ai-image-generator/
 
 > **Linux note:** the Linux build ships the **Vulkan** backend (`app/backend/linux/sd-vulkan`), which accelerates AMD, Intel, and Nvidia GPUs through a single binary, with automatic CPU fallback. CUDA-specific binaries are Windows-only in this project; on Linux, Nvidia cards are driven through their Vulkan driver. For an Nvidia/AMD-specific Linux build (CUDA or ROCm), compile [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) and drop the resulting `sd-server` + `libstable-diffusion.so` into `app/backend/linux/` (renaming `sd-server` to `sd-vulkan`).
 
+> **Multiple GPUs?** When the Vulkan backend sees more than one device (common with an Nvidia/AMD card alongside a CPU's integrated GPU), the **GPU Device** dropdown in **Image Constraints → System Settings** lets you pick which one runs generation. **Auto** scores the detected devices and prefers a dedicated card with matrix-core (Tensor/coopmat) support over an integrated GPU or software rasterizer. Note: a single image always runs on one device — stable-diffusion.cpp does not split one generation across multiple GPUs.
+
 ---
 
 ## ⏱️ Performance Benchmarks
@@ -106,6 +109,7 @@ Typical generation times for an image with **20 steps** (e.g. 512x512 resolution
 *   **Port Conflicts:** The frontend uses `1420` by default. The backend tries `8080` first, then automatically falls back to a free port if `8080` is already busy.
 *   **Linux — "cannot open shared object file":** the backend needs `libstable-diffusion.so` next to `sd-vulkan`; `serve.cjs` sets `LD_LIBRARY_PATH` automatically. If you launched the binary by hand, run it from `app/backend/linux/` or export that directory on `LD_LIBRARY_PATH`.
 *   **Linux — no GPU detected:** install the Vulkan loader/driver (`sudo apt install libvulkan1 mesa-vulkan-drivers vulkan-tools`) and verify with `vulkaninfo --summary`. Without a Vulkan device the app still works on CPU.
+*   **Wrong GPU is used (e.g. integrated instead of your discrete card):** on systems with multiple GPUs the Vulkan backend may default to the first device, which can be a CPU's integrated GPU. Open **Image Constraints → System Settings → GPU Device** and select your discrete card (or leave it on **Auto**, which prefers the dedicated GPU). Run `vulkaninfo --summary` to see how the devices are ordered.
 
 ---
 
